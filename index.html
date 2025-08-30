@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bomberman — DOM + rAF (60 FPS)</title>
+  <style>
+    :root {
+      --tile: 40px;            /* Size of one grid cell */
+      --cols: 15;              /* Grid width */
+      --rows: 13;              /* Grid height */
+      --world-w: calc(var(--cols) * var(--tile));
+      --world-h: calc(var(--rows) * var(--tile));
+      --bg: #0f1226;
+      --panel: #181c3a;
+      --text: #e9ecff;
+      --accent: #6ee7ff;
+      --good: #96f7a8;
+      --warn: #ffd166;
+      --danger: #ff6b6b;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      background: radial-gradient(1200px 800px at 50% -10%, #1e2350, #0f1226 60%);
+      color: var(--text);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      justify-items: center;
+      gap: 10px;
+      user-select: none;
+    }
+
+    /* HUD */
+    #hud {
+      width: min(100%, 900px);
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, #1a1f42, #121433);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .hud-item { background: #0d1026; padding: 8px 12px; border-radius: 8px; letter-spacing:.3px; }
+    .hud-item strong { color: var(--accent); }
+    #pauseBtn, #restartBtn {
+      appearance: none; border: 0; background: #2b2f64; color: var(--text); padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 600;
+      box-shadow: 0 6px 16px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.08);
+      transition: transform .1s ease;
+    }
+    #pauseBtn:active, #restartBtn:active { transform: translateY(1px); }
+
+    /* Game viewport */
+    #viewport {
+      width: var(--world-w);
+      height: var(--world-h);
+      position: relative;
+      overflow: hidden;
+      background: #0b0f25 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect fill="%23101531" x="0" y="0" width="40" height="40"/><path d="M0 0h40v40H0z" fill="none" stroke="%23202a6b" stroke-opacity="0.2"/></svg>');
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.08);
+      box-shadow: 0 30px 60px rgba(0,0,0,.45);
+    }
+
+    #world { position: absolute; inset: 0; }
+
+    /* Static tiles (no animations; left/top for fewer layers) */
+    .tile { position: absolute; width: var(--tile); height: var(--tile); }
+    .floor { background: radial-gradient(20px 20px at 50% 50%, #151a3a, #0d112c 70%); }
+    .solid {
+      background: linear-gradient(#3c4279, #282c5b);
+      border: 2px solid #141744;
+      border-radius: 6px;
+      box-shadow: inset 0 6px 10px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.35);
+    }
+    .crate {
+      background: linear-gradient(#623b2a, #3f261c);
+      border: 2px solid #2a170f;
+      border-radius: 6px;
+      box-shadow: inset 0 6px 10px rgba(0,0,0,.45), 0 6px 12px rgba(0,0,0,.35);
+      position: absolute;
+    }
+
+    /* Dynamic actors use transforms for buttery 60 FPS */
+    .actor { position: absolute; width: var(--tile); height: var(--tile); will-change: transform; transform: translate3d(0,0,0); }
+
+    /* Player sprite: KING (SVG bg) */
+    .player {
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop stop-color="%23ffeaa7"/><stop offset="1" stop-color="%23e1b12c"/></linearGradient></defs><circle cx="20" cy="22" r="12" fill="%236aa0ff" stroke="white" stroke-opacity="0.2" stroke-width="2"/><circle cx="16" cy="20" r="2" fill="%230a1330"/><circle cx="24" cy="20" r="2" fill="%230a1330"/><rect x="14" y="25" width="12" height="3" rx="1.5" fill="%230a1330"/><path d="M8 8l4 5 4-5 4 5 4-5 4 5 4-5v5c0 2-2 4-4 4H12c-2 0-4-2-4-4z" fill="url(%23g)" stroke="%238f6b00" stroke-width="1.5"/></svg>');
+      background-size: cover;
+      border-radius: 8px;
+      box-shadow: 0 10px 20px rgba(0,0,0,.35);
+    }
+
+    /* Enemy sprite: DINOSAUR (SVG bg) */
+    .enemy {
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><g><path d="M8 28c0-7 5-12 12-12h6c3 0 6 2 6 5v7h-4v-5h-3l-2 4h-5l-2-3-2 3H8z" fill="%23a0e57a" stroke="%233a6d2a" stroke-width="1.5"/><circle cx="26" cy="18" r="2" fill="%230a1330"/></g></svg>');
+      background-size: cover;
+      border-radius: 6px;
+      box-shadow: 0 8px 18px rgba(0,0,0,.35);
+    }
+    /* enemy color variations */
+    .enemy.v2 { filter: hue-rotate(40deg) saturate(1.1); }
+    .enemy.v3 { filter: hue-rotate(90deg) saturate(1.1); }
+
+    .bomb { position:absolute; width: var(--tile); height: var(--tile); will-change: transform, opacity; pointer-events:none; }
+    .bomb .ball {
+      position:absolute; left:50%; top:50%; width:24px; height:24px; transform: translate(-50%,-50%);
+      background: radial-gradient(14px 14px at 35% 35%, #6d6d7a, #26262b);
+      border-radius:50%; border:2px solid rgba(255,255,255,.15); box-shadow: inset 0 -6px 12px rgba(0,0,0,.5), 0 8px 16px rgba(0,0,0,.4);
+      animation: bombPulse 1s infinite ease-in-out;
+    }
+    @keyframes bombPulse { 0%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.12)} 100%{transform:translate(-50%,-50%) scale(1)} }
+
+    .flame { position:absolute; width: var(--tile); height: var(--tile); pointer-events:none; will-change: opacity, transform; }
+    .flame .core {
+      position:absolute; left:50%; top:50%; width: 34px; height: 34px; transform: translate(-50%,-50%);
+      background: radial-gradient(12px 12px at 50% 40%, #fff8b7, #ffd166 45%, #ff8f2d 70%, #f5471f 88%);
+      border-radius: 8px; filter: saturate(1.2);
+      box-shadow: 0 0 18px 8px rgba(255,138,0,.35), 0 0 40px 10px rgba(255,211,102,.15);
+      animation: flameFade .35s ease-out forwards;
+    }
+    .flame.dir-x .core { width: 40px; height: 26px; border-radius: 6px; }
+    .flame.dir-y .core { width: 26px; height: 40px; border-radius: 6px; }
+    @keyframes flameFade { from { opacity: 1; transform: translate(-50%,-50%) scale(1)} to { opacity: 0; transform: translate(-50%,-50%) scale(0.9)} }
+
+    /* Overlay (Pause, Win/Lose) */
+    #overlay { position:absolute; inset: 0; display:flex; align-items:center; justify-content:center; background: rgba(7,10,25,.55); opacity:0; pointer-events:none; transition: opacity .15s ease; backdrop-filter: blur(4px); }
+    #overlay.show { opacity:1; pointer-events:auto; }
+    .menu {
+      width: min(92%, 420px);
+      background: linear-gradient(180deg, #1b1f45, #121434);
+      border:1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 18px; text-align:center;
+      box-shadow: 0 20px 50px rgba(0,0,0,.45);
+    }
+    .menu h2 { margin: 6px 0 12px; font-size: 22px; letter-spacing:.4px; }
+    .menu p { opacity:.9; margin: 6px 0 16px; }
+    .menu .actions { display:flex; gap:10px; justify-content:center; }
+    .menu .btn { padding: 10px 14px; background:#2b2f64; border-radius:10px; cursor:pointer; font-weight:600; }
+
+    /* Help tooltip */
+    #help { font-size: 12px; opacity:.8; }
+
+    /* Accessibility focus */
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="hud-item"><strong>Time</strong>: <span id="time">03:00</span></div>
+    <div class="hud-item"><strong>Score</strong>: <span id="score">0</span></div>
+    <div class="hud-item"><strong>Lives</strong>: <span id="lives">3</span></div>
+    <div class="hud-item"><strong>FPS</strong>: <span id="fps">60</span></div>
+    <div style="display:flex; gap:8px;">
+      <button id="pauseBtn" aria-label="Pause (P)">Pause</button>
+      <button id="restartBtn" aria-label="Restart (R)">Restart</button>
+    </div>
+  </div>
+
+  <div id="viewport" role="application" aria-label="Bomberman Game">
+    <div id="world"></div>
+    <div id="overlay" aria-live="polite" aria-modal="true">
+      <div class="menu">
+        <h2 id="overlayTitle">Paused</h2>
+        <p id="overlayMsg">Game is paused. Continue or restart.</p>
+        <div class="actions">
+          <button class="btn" id="btnContinue">Continue</button>
+          <button class="btn" id="btnRestart">Restart</button>
+        </div>
+        <p id="help">Controls: Arrow Keys or WASD to move • Space to place bomb • P/Esc to pause • R to restart</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  ;(() => {
+    // ========================= Config =========================
+    const TILE = 40;                // px per grid cell (match CSS)
+    const COLS = 15;
+    const ROWS = 13;
+
+    const START_LIVES = 3;
+    const START_TIME = 180;         // seconds (3 minutes)
+
+    const PLAYER_SPEED = 6;         // cells per second (smooth tween)
+    const ENEMY_SPEED = 3.25;       // cells per second
+    const MAX_BOMBS = 2;
+    const BOMB_FUSE = 2.1;          // seconds to explode
+    const BOMB_RANGE = 3;           // tiles per direction
+    const BOMB_PASS_GRACE = 0.22;   // seconds the placer can pass through their bomb
+    const FLAME_DURATION = 0.33;    // seconds flame visible
+
+    const SCORE_CRATE = 30;
+    const SCORE_ENEMY = 150;
+
+    const worldEl = document.getElementById('world');
+    const overlayEl = document.getElementById('overlay');
+    const overlayTitleEl = document.getElementById('overlayTitle');
+    const overlayMsgEl = document.getElementById('overlayMsg');
+    const btnContinue = document.getElementById('btnContinue');
+    const btnRestart = document.getElementById('btnRestart');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+
+    const hud = {
+      time: document.getElementById('time'),
+      score: document.getElementById('score'),
+      lives: document.getElementById('lives'),
+      fps: document.getElementById('fps'),
+    };
+
+    // Game state containers
+    let grid;              // ROWS x COLS, 0 empty, 1 solid, 2 crate
+    let bombs;             // array of bombs
+    let flames;            // array of flames (logic)
+    let enemies;           // array of enemies
+    let player;            // player object
+
+    let running = false;
+    let paused = false;
+    let timeLeft = START_TIME;
+    let score = 0;
+    let lives = START_LIVES;
+
+    // Performance / FPS meter
+    let lastT = performance.now();
+    let frameCount = 0, fps = 60, fpsAcc = 0, fpsTick = 0;
+
+    // Input tracking
+    const keys = Object.create(null);
+    const keyPriority = []; // LRU of movement keys for direction priority
+
+    // DOM caches
+    const dom = {
+      tiles: [],           // [ [div,..], [..], ... ]
+      crates: [],          // 2D array of crate elements for precise removal
+      player: null,
+      enemies: [],
+      bombLayer: document.createElement('div'),
+      flameLayer: document.createElement('div'),
+    };
+    dom.bombLayer.id = 'bombs';
+    dom.flameLayer.id = 'flames';
+
+    // Helpers
+    const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+    const cellKey = (x, y) => `${x},${y}`;
+    const toPixels = (x, y) => `translate3d(${x*TILE}px, ${y*TILE}px, 0)`;
+    const nowSec = () => performance.now()/1000;
+
+    const DIRS = [
+      {name:'up', dx:0, dy:-1},
+      {name:'down', dx:0, dy:1},
+      {name:'left', dx:-1, dy:0},
+      {name:'right', dx:1, dy:0},
+    ];
+
+    function isInside(x, y) { return x>=0 && y>=0 && x<COLS && y<ROWS; }
+
+    function walkableFor(entity, nx, ny) {
+      if (!isInside(nx, ny)) return false;
+      if (grid[ny][nx] === 1 || grid[ny][nx] === 2) return false; // solid or crate
+      const b = bombsByCell.get(cellKey(nx,ny));
+      if (!b) return true;
+      if (b.owner === entity && b.placeT + BOMB_PASS_GRACE > nowSec()) return true; // grace period
+      if (Math.round(entity.x) === b.x && Math.round(entity.y) === b.y) return true; // leaving same cell
+      return false;
+    }
+
+    // =================== Map Generation =======================
+    function genGrid() {
+      const g = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+      // Borders solid
+      for (let x=0; x<COLS; x++) { g[0][x]=1; g[ROWS-1][x]=1; }
+      for (let y=0; y<ROWS; y++) { g[y][0]=1; g[y][COLS-1]=1; }
+      // Interior pillars (every other cell)
+      for (let y=2; y<ROWS-1; y+=2) for (let x=2; x<COLS-1; x+=2) g[y][x]=1;
+      // Place crates randomly (avoid starting area and enemy spawns)
+      for (let y=1; y<ROWS-1; y++) {
+        for (let x=1; x<COLS-1; x++) {
+          if (g[y][x] !== 0) continue;
+          const inStart = (x<=2 && y<=2);
+          const inEnemyZones = (x>=COLS-3 && y>=ROWS-3) || (x>=COLS-3 && y<=2) || (x<=2 && y>=ROWS-3);
+          if (!inStart && !inEnemyZones && Math.random() < 0.45) {
+            g[y][x] = 2; // crate
+          }
+        }
+      }
+      return g;
+    }
+
+    // =================== DOM Construction =====================
+    function buildDOM() {
+      worldEl.innerHTML = '';
+      dom.tiles = [];
+      dom.crates = [];
+      const frag = document.createDocumentFragment();
+
+      // Static tiles
+      for (let y=0; y<ROWS; y++) {
+        dom.tiles[y] = [];
+        for (let x=0; x<COLS; x++) {
+          const t = document.createElement('div');
+          t.className = 'tile ' + (grid[y][x]===1 ? 'solid' : 'floor');
+          t.style.left = (x*TILE) + 'px';
+          t.style.top  = (y*TILE) + 'px';
+          frag.appendChild(t);
+          dom.tiles[y][x] = t;
+        }
+      }
+
+      // Crates on top layer (also index them for fast removal)
+      for (let y=0; y<ROWS; y++) {
+        dom.crates[y] = [];
+        for (let x=0; x<COLS; x++) {
+          if (grid[y][x] === 2) {
+            const c = document.createElement('div');
+            c.className = 'tile crate';
+            c.style.left = (x*TILE) + 'px';
+            c.style.top  = (y*TILE) + 'px';
+            dom.crates[y][x] = c;
+            frag.appendChild(c);
+          } else {
+            dom.crates[y][x] = null;
+          }
+        }
+      }
+
+      // Dynamic layers appended last
+      dom.bombLayer.innerHTML = '';
+      dom.flameLayer.innerHTML = '';
+      frag.appendChild(dom.bombLayer);
+      frag.appendChild(dom.flameLayer);
+
+      // Player
+      dom.player = document.createElement('div');
+      dom.player.className = 'actor player';
+      frag.appendChild(dom.player);
+
+      // Enemies
+      dom.enemies = [];
+      for (let i=0; i<enemies.length; i++) {
+        const el = document.createElement('div');
+        el.className = 'actor enemy' + (i%3===1?' v2':(i%3===2?' v3':''));
+        dom.enemies.push(el);
+        frag.appendChild(el);
+      }
+
+      worldEl.appendChild(frag);
+    }
+
+    // =================== Entities & Logic =====================
+    function newPlayer() {
+      return {
+        x: 1, y: 1,            // grid position (float during tween)
+        cx: 1, cy: 1,          // current cell integer
+        tx: 1, ty: 1,          // target cell
+        moving: false,
+        t: 0,                  // tween 0..1
+        speed: PLAYER_SPEED,
+        dead: false,
+      };
+    }
+
+    function newEnemy(spawn) {
+      return {
+        x: spawn.x, y: spawn.y,
+        cx: spawn.x, cy: spawn.y,
+        tx: spawn.x, ty: spawn.y,
+        moving: false, t: 0, speed: ENEMY_SPEED, dead: false,
+        dir: DIRS[Math.floor(Math.random()*4)],
+      };
+    }
+
+    function placeEnemies() {
+      const spawns = [
+        {x: COLS-2, y: ROWS-2},
+        {x: COLS-2, y: 1},
+        {x: 1, y: ROWS-2},
+      ];
+      const es = [];
+      for (let i=0; i<spawns.length; i++) {
+        const s = spawns[i];
+        if (grid[s.y][s.x] === 0) es.push(newEnemy(s));
+      }
+      if (es.length === 0) es.push(newEnemy({x: COLS-2, y: ROWS-2}));
+      return es;
+    }
+
+    // Bombs
+    let bombsByCell; // Map key->bomb
+    function newBomb(x, y, owner) {
+      return { x, y, owner, placeT: nowSec(), explodeAt: nowSec() + BOMB_FUSE, range: BOMB_RANGE, el: null };
+    }
+
+    function addBombDOM(b) {
+      const el = document.createElement('div');
+      el.className = 'bomb';
+      const ball = document.createElement('div');
+      ball.className = 'ball';
+      el.appendChild(ball);
+      dom.bombLayer.appendChild(el);
+      b.el = el;
+      el.style.transform = toPixels(b.x, b.y);
+    }
+
+    function removeBombDOM(b) {
+      if (b.el && b.el.parentNode) b.el.parentNode.removeChild(b.el);
+      b.el = null;
+    }
+
+    function spawnFlame(x, y, axis) {
+      const f = { x, y, born: nowSec(), axis, el: null };
+      const el = document.createElement('div');
+      el.className = 'flame ' + (axis==='x' ? 'dir-x' : 'dir-y');
+      const core = document.createElement('div');
+      core.className = 'core';
+      el.appendChild(core);
+      dom.flameLayer.appendChild(el);
+      el.style.transform = toPixels(x, y);
+      f.el = el;
+      flames.push(f);
+    }
+
+    function clearOldFlames() {
+      const t = nowSec();
+      for (let i=flames.length-1; i>=0; i--) {
+        if (t - flames[i].born >= FLAME_DURATION) {
+          const el = flames[i].el;
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+          flames.splice(i,1);
+        }
+      }
+    }
+
+    function detonate(b) {
+      if (!bombsByCell.has(cellKey(b.x,b.y))) return; // already detonated by chain
+      // Remove bomb from map first
+      bombsByCell.delete(cellKey(b.x,b.y));
+      bombs = bombs.filter(x => x!==b);
+      removeBombDOM(b);
+
+      // Center flame
+      spawnFlame(b.x, b.y, 'x');
+      spawnFlame(b.x, b.y, 'y');
+
+      // Propagate flames in 4 directions
+      for (const d of DIRS) {
+        for (let i=1; i<=b.range; i++) {
+          const nx = b.x + d.dx * i;
+          const ny = b.y + d.dy * i;
+          if (!isInside(nx, ny)) break;
+          if (grid[ny][nx] === 1) break; // solid blocks fire
+          spawnFlame(nx, ny, (d.dx!==0?'x':'y'));
+
+          // Chain reaction: bombs hit explode immediately
+          const other = bombsByCell.get(cellKey(nx,ny));
+          if (other) detonate(other);
+
+          if (grid[ny][nx] === 2) { // crate breaks and stops propagation
+            grid[ny][nx] = 0;
+            score += SCORE_CRATE; hud.score.textContent = String(score);
+            const cEl = dom.crates[ny] && dom.crates[ny][nx];
+            if (cEl && cEl.parentNode) cEl.parentNode.removeChild(cEl);
+            if (dom.crates[ny]) dom.crates[ny][nx] = null;
+            break;
+          }
+        }
+      }
+    }
+
+    // ===================== Movement ===========================
+    function tryStartMove(entity, dir) {
+      const nx = entity.cx + dir.dx;
+      const ny = entity.cy + dir.dy;
+      if (!walkableFor(entity, nx, ny)) return false;
+      entity.tx = nx; entity.ty = ny; entity.t = 0; entity.moving = true; entity.dir = dir;
+      return true;
+    }
+
+    function stepEntity(entity, dt) {
+      if (entity.dead) return;
+      if (!entity.moving) return;
+      entity.t += dt * entity.speed;
+      const t = clamp(entity.t, 0, 1);
+      entity.x = (entity.cx * (1-t)) + (entity.tx * t);
+      entity.y = (entity.cy * (1-t)) + (entity.ty * t);
+      if (entity.t >= 1) {
+        entity.moving = false;
+        entity.cx = entity.tx; entity.cy = entity.ty;
+        entity.x = entity.cx; entity.y = entity.cy;
+      }
+    }
+
+    // ===================== Enemies AI =========================
+    function enemyDecide(e) {
+      if (e.dead || e.moving) return;
+      // Prefer continuing direction if possible, else perpendiculars, else reverse.
+      const dirs = [e.dir || DIRS[0], ...shuffle(perpendiculars(e.dir || DIRS[0])), opposite(e.dir || DIRS[0])];
+      for (const d of dirs) {
+        if (walkableFor(e, e.cx + d.dx, e.cy + d.dy)) {
+          tryStartMove(e, d);
+          return;
+        }
+      }
+    }
+
+    function shuffle(a){ a = a.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+    function perpendiculars(d){ if (!d) return DIRS; return d.dx!==0 ? DIRS.filter(x=>x.dx===0) : DIRS.filter(x=>x.dx!==0); }
+    function opposite(d){ if (!d) return DIRS[1]; return DIRS.find(x=>x.dx===-d.dx && x.dy===-d.dy); }
+
+    // ===================== Input ===============================
+    const keyMap = {
+      'ArrowUp':'up', 'KeyW':'up',
+      'ArrowDown':'down', 'KeyS':'down',
+      'ArrowLeft':'left', 'KeyA':'left',
+      'ArrowRight':'right', 'KeyD':'right',
+    };
+
+    let bombKeyDown = false;
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code in keyMap) {
+        keys[keyMap[e.code]] = true; // continuous while held
+        const i = keyPriority.indexOf(keyMap[e.code]); if (i!==-1) keyPriority.splice(i,1); keyPriority.unshift(keyMap[e.code]);
+        e.preventDefault();
+      }
+      if (e.code === 'Space') {
+        if (!bombKeyDown) placePlayerBomb();
+        bombKeyDown = true;
+        e.preventDefault();
+      }
+      if (e.code === 'KeyP' || e.code === 'Escape') { togglePause(); }
+      if (e.code === 'KeyR') { restart(); }
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code in keyMap) { keys[keyMap[e.code]] = false; const i=keyPriority.indexOf(keyMap[e.code]); if (i!==-1) keyPriority.splice(i,1); }
+      if (e.code === 'Space') bombKeyDown = false;
+    });
+
+    pauseBtn.addEventListener('click', togglePause);
+    restartBtn.addEventListener('click', restart);
+    btnContinue.addEventListener('click', () => { if (paused) togglePause(); });
+    btnRestart.addEventListener('click', restart);
+
+    function togglePause() {
+      paused = !paused;
+      overlayTitleEl.textContent = paused ? 'Paused' : 'Running';
+      overlayMsgEl.textContent = paused ? 'Game is paused. Continue or restart.' : '';
+      overlayEl.classList.toggle('show', paused);
+      if (!paused) lastT = performance.now();
+    }
+
+    // ===================== Game Flow ===========================
+    function init() {
+      grid = genGrid();
+      bombs = [];
+      bombsByCell = new Map();
+      flames = [];
+      enemies = placeEnemies();
+      player = newPlayer();
+
+      score = 0;
+      lives = START_LIVES;
+      timeLeft = START_TIME;
+      paused = false;
+      frameCount=0; fpsAcc=0; fpsTick=0;
+
+      buildDOM();
+      updateHUD(true);
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      lastT = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    function restart() {
+      init();
+      overlayEl.classList.remove('show');
+      if (!running) start();
+    }
+
+    function gameOver(won) {
+      paused = true;
+      overlayTitleEl.textContent = won ? 'You Win!' : 'Game Over';
+      overlayMsgEl.textContent = won ? 'All enemies defeated before time ran out. 🎉' : 'You ran out of lives or time. Try again!';
+      overlayEl.classList.add('show');
+    }
+
+    function updateHUD(force=false) {
+      if (!force) return;
+      hud.score.textContent = String(score);
+      hud.lives.textContent = String(lives);
+      const m = Math.floor(timeLeft/60).toString().padStart(2,'0');
+      const s = Math.floor(timeLeft%60).toString().padStart(2,'0');
+      hud.time.textContent = `${m}:${s}`;
+      hud.fps.textContent = `${Math.round(fps)}`;
+    }
+
+    function placePlayerBomb() {
+      if (player.dead) return;
+      if (bombs.length >= MAX_BOMBS) return;
+      const x = Math.round(player.x), y = Math.round(player.y);
+      if (grid[y][x] !== 0) return;
+      if (bombsByCell.has(cellKey(x,y))) return;
+      const b = newBomb(x, y, player);
+      bombs.push(b);
+      bombsByCell.set(cellKey(x,y), b);
+      addBombDOM(b);
+    }
+
+    // ===================== Main Loop ===========================
+    function loop(t) {
+      if (!running) return;
+      if (!paused) {
+        const dt = Math.min(0.05, (t - lastT) / 1000); // clamp
+        lastT = t;
+
+        // FPS meter (EMA-ish)
+        fpsTick += dt; frameCount++; fpsAcc += (1/dt);
+        if (fpsTick >= 0.5) { fps = fpsAcc / frameCount; fpsTick = 0; frameCount = 0; fpsAcc = 0; hud.fps.textContent = `${Math.round(fps)}`; }
+
+        // Timer
+        timeLeft = Math.max(0, timeLeft - dt);
+        if (Math.floor(timeLeft*10)%10 === 0) { // coarse throttle
+          const m = Math.floor(timeLeft/60).toString().padStart(2,'0');
+          const s = Math.floor(timeLeft%60).toString().padStart(2,'0');
+          hud.time.textContent = `${m}:${s}`;
+        }
+
+        update(dt);
+        render();
+
+        // End conditions
+        if (enemies.every(e=>e.dead)) {
+          gameOver(true);
+        } else if (timeLeft <= 0) {
+          gameOver(false);
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+
+    function update(dt) {
+      // Player input → start movement if idle
+      if (!player.dead && !player.moving) {
+        const order = keyPriority.slice(); // most recent first
+        for (const key of order) {
+          const dir = DIRS.find(d=>d.name===key);
+          if (dir && tryStartMove(player, dir)) break;
+        }
+      }
+
+      stepEntity(player, dt);
+
+      // Enemy AI + movement
+      for (const e of enemies) {
+        if (!e.dead) enemyDecide(e);
+        stepEntity(e, dt);
+      }
+
+      // Collisions: enemy ↔ player
+      for (const e of enemies) {
+        if (e.dead || player.dead) continue;
+        if (Math.round(e.x) === Math.round(player.x) && Math.round(e.y) === Math.round(player.y)) {
+          killPlayer();
+        }
+      }
+
+      // Bombs → explode
+      const t = nowSec();
+      for (let i=bombs.length-1; i>=0; i--) {
+        const b = bombs[i];
+        if (t >= b.explodeAt) detonate(b);
+      }
+
+      // Flames → damage entities
+      for (const f of flames) {
+        const fx = f.x, fy = f.y;
+        if (!player.dead && Math.round(player.x)===fx && Math.round(player.y)===fy) killPlayer();
+        for (const e of enemies) {
+          if (!e.dead && Math.round(e.x)===fx && Math.round(e.y)===fy) {
+            e.dead = true; score += SCORE_ENEMY; hud.score.textContent = String(score);
+            const idx = enemies.indexOf(e);
+            if (dom.enemies[idx]) dom.enemies[idx].style.opacity = '0.25';
+          }
+        }
+      }
+
+      clearOldFlames();
+    }
+
+    function killPlayer() {
+      lives -= 1; hud.lives.textContent = String(lives);
+      player.dead = true;
+      dom.player.style.opacity = '0.35';
+      if (lives <= 0) { gameOver(false); return; }
+      setTimeout(() => {
+        player = newPlayer();
+        dom.player.style.opacity = '1';
+      }, 550);
+    }
+
+    function render() {
+      // Player
+      dom.player.style.transform = toPixels(player.x, player.y);
+      // Enemies
+      for (let i=0; i<enemies.length; i++) {
+        const e = enemies[i];
+        const el = dom.enemies[i];
+        if (!el) continue;
+        el.style.transform = toPixels(e.x, e.y);
+      }
+      // Bombs positions
+      for (const b of bombs) {
+        if (b.el) b.el.style.transform = toPixels(b.x, b.y);
+      }
+    }
+
+    // ===================== Boot ===============================
+    function newGame() {
+      grid = genGrid();
+      bombs = []; bombsByCell = new Map();
+      flames = [];
+      enemies = placeEnemies();
+      player = newPlayer();
+      buildDOM();
+    }
+
+    function startGame() { init(); start(); }
+
+    newGame();
+    startGame();
+
+  })();
+  </script>
+</body>
+</html>
